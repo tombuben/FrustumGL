@@ -1,0 +1,2 @@
+M asianDragon.obj
+O 0 0 0 0 0.01

@@ -1,0 +1,2 @@
+SM 200000 PowerPlantM.obj
+SO 0 0 0 -200 0.001

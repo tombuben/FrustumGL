@@ -1,0 +1,2 @@
+SM 50000 asianDragon.obj
+SO 0 0 0 0 0.01

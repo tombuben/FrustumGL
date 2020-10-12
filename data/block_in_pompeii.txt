@@ -1,0 +1,2 @@
+M block_in_pompeii.high_lod_combined.obj
+O 0 -70 0 -120 0.3
