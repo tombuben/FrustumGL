@@ -1,0 +1,551 @@
+\documentclass[report,11pt]{elsarticle}
+%\documentclass{article}[11pt,a4]
+%\documentclass[11pt]{article}
+
+\usepackage[lined,linesnumbered]{algorithm2e}
+\usepackage{a4wide}
+\usepackage{ae}
+\usepackage[czech]{babel}
+%\usepackage[cp1250]{inputenc}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{pdfpages}
+\usepackage{verbatim}
+\usepackage{listings}
+\usepackage{pgf}
+\usepackage{import}
+
+\paperwidth=210 true mm
+\paperheight=297 true mm
+\pdfpagewidth=210 true mm
+\pdfpageheight=297 true mm
+
+% Pro cestinu zakomentuj nasledujici radek
+%\selectlanguage{english}
+% Pro anglictinu zakomentuj nasledujici radek
+\selectlanguage{czech}
+
+%GET RID OF "Preprint submitted to elsevier"
+\makeatletter
+\def\ps@pprintTitle{%
+   \let\@oddhead\@empty
+   \let\@evenhead\@empty
+   \def\@oddfoot{\reset@font\hfil\thepage\hfil}
+   \let\@evenfoot\@oddfoot
+}
+\makeatother
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Semestrální práce 17\\ Hierarchical View-Frustum Culling for Z-buffer Rendering}
+
+\author{Tomáš Bubeníček\footnote{B4M39DPG -- Tomáš Bubeníček, zimní semestr 2019/20}\\
+Katedra počítačové grafiky a interakce,\\ Fakulta elektrotechnická, ČVUT Praha
+}
+
+\date{}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  Abstract
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+Implement hierarchical view frustum culling for large scale scenes consisting of
+triangles. First, construct a bounding volume hierarchy (BVH) using top-down method,
+middle point subdivision. Avoid rendering such BVH nodes that cannot be visible
+(out of viewing frustum) usually known as view frustum culling.
+\end{abstract}
+
+  % Klicova slova k uloze
+\begin{keyword}
+Frustum culling, BVH, GPU rasterization
+\end{keyword}
+
+\end{frontmatter}
+
+%%%% --------------------------------------------------------
+\section{\label{SEC:Intro}Úvod}
+
+Při vykreslování scény pomocí metod rasterizace se pro každý vrchol provádí
+transformace, jejímž cílem je projektovat body ve scéně do bodů v clip space.
+V tomto souřadném prostoru lze poté snadno určit zda primitiva náležící k daným
+vrcholům (v OpenGL trojúhelníky) budou ležet ve výsledném obraze. Tyto
+primitiva jsou poté rasterizovány.
+
+Pro většinu scén je při transformaci do clip-space výsledkem, že velká část
+transformovaných primitiv neleží v té části clip space, ve které probíhá
+rasterizace. Cílem této práce je tedy implementovat systém, který omezí počet
+transformovaných vrcholů tak, aby se transformovaly pouze ty vrcholy, které
+náleží k objektům, které budou po transformaci vidět na výsledném obraze.
+
+%%%% --------------------------------------------------------
+\section{\label{SEC:Description}Popis algoritmu}
+%\section{\label{SEC:Description}Algorithm Description}
+
+Algoritmus pracuje s datovou strukturou BVH (Bounding Volume Hierarchy)
+postavenou nad jednotlivými objekty ve scéně. Jednotlivé uzly BVH mají osově
+zarovnanou obálku ve tvaru krychle (Axis Aligned Bounding Box -- AABB) a každý
+vnitřní uzel má dva potomky. Obálky jednotlivých uzlů poté testujeme vůči
+pohledovému jehlanu (viewing frustum) kamery vykreslující scénu. Tento komolý
+jehlan reprezentuje objem, ve kterém bude po transformaci do clip-space probíhat
+samotná rasterizace.
+
+Při testu průniku obálky a pohledového jehlanu může dojít k třem různým
+výsledkům, podle kterých se při vykreslování rozhodujeme:
+
+\begin{itemize}
+    \item Obálka je mimo pohledový jehlan - Uzel a všechny jeho potomky
+          nevykreslujeme.
+    \item Obálka je celá uvnitř pohledového jehlanu - Uzel a všechny jeho
+          potomky vykreslujeme.
+    \item Obálka protíná stěnu jehlanu - Provádíme test průniku obálky na oba potomky
+          uzlu, pokud uzel nemá potomky, vykreslíme.
+\end{itemize}
+
+Celý tento algoritmus je tedy založen na efektivní implementaci tohoto testu.
+V následujících podkapitolách je tedy popsán algoritmus testování a několik
+způsobů pro jeho zrychlení.
+
+\subsection{Test průniku AABB-frustum}
+
+V \cite{assarsson2000optimized} jsou popsány dva přístupy, pomocí kterých lze
+test průniku obálky a pohledového jehlanu provádět. První metoda je provádět
+operaci transformace do clip space na samotné vrcholy obálek, jelikož ve
+výsledném souřadném systému je určit, zda obálka bude vidět na výsledném obraze
+je relativně snadná - Stačí porovnat obálku transformovaného AABB a AABB
+reprezentující rasterizovaný objem. Pro transformaci obálky do clip space je
+třeba ale 72 operací násobení, což nemusí být ve všech implementacích efektivní
+(obzvláště v implementacích nevyužívajících paralelismus či SIMD instrukcí).
+
+Druhá, mnou implementovaná metoda, reprezentuje frustum jako šest rovin ve world
+space, vůči kterým se postupně provádí testy průniku. Pokud se AABB nachází
+na straně roviny reprezentující prostor vně frustum, AABB je mimo pohledový
+jehlan. Naopak pokud všech šest testů průniku vrátí že se AABB nachází v
+části poloprostoru reprezentujícího vnitřní část pohledového jehlanu, nachází se
+obálka uvnitř. Pokud obálka protíná alespoň jednu rovinu, protíná také stěnu
+výsledné obálky.
+
+\subsection{Test průniku AABB-rovina}
+
+Místo testování všech osmi vrcholů obálky je možné testování urychlit pomocí
+testování pouze dvou bodů $n$ a $p$, ležících na úhlopříčce nejbližší normále
+roviny. Určení těchto dvou bodů je snadné: Jsou určeny podle jednotlivých
+komponent normálového vektoru -- Pokud je komponenta kladná, bod $p$ leží
+v dimenzi komponenty na pozici bodu $max(AABB)$ a bod $n$ poté leží v dimenzi
+komponenty na pozici $min(AABB)$.
+
+Pro určení průniku je třeba rozhodnout, zda bod $n$ leží uvnitř poloprostoru
+definovaného stěnou pohledového jehlanu. Pokud ne, obálka leží celá vně. Pokud
+ano, provede se stejný test na bod $p$. Pokud tento bod leží vně, obálka protíná
+rovinu, pokud ano, obálka leží celá uvnitř poloprostoru. Tuto implementaci bez
+jakéhokoliv dodatečného zrychlení lze nalézt na obrázku \ref{fig:AABBplane},
+který je založen na implementaci v \cite{sykora2002efficient}.
+
+\begin{figure}
+    \centering
+\begin{lstlisting}[language=C, basicstyle=\tiny]
+
+short AABB::checkFrustum(Frustum& f)
+{
+  short result = INSIDE;
+  for (i = 0; i < 6; i++){
+    glm::vec4& p = f.planes[i];
+    m_prod = (p.x * m[p.x<0].x) + (p.y * m[p.y<0].y) + (p.z * m[p.z<0].z);
+    if (m_prod > -p.w)
+	    return OUTSIDE;
+
+    n_prod = (p.x * m[p.x>0].x) + (p.y * m[p.y>0].y) + (p.z * m[p.z>0].z);
+    if (n_prod > -p.w)
+	    result = INTERSECTS;
+  }
+  return result;
+}
+\end{lstlisting}
+    \caption{Test průniku AABB frustum pomocí šesti testů průniku s rovinou.
+    Pole \texttt{this->m} má v pozici~0 minimální bod a v pozici 1 maximální bod
+    osově zarovnané obálky. Pole \texttt{f.planes} obsahuje implicitní zadání
+    všech šesti rovin jehlanu.}
+    \label{fig:AABBplane}
+\end{figure}
+
+\subsection{Maskování rovin}
+
+Zanořování se do vnitřních uzlů BVH nastává pouze v situaci, kdy se obálka
+protíná s alespoň jednou rovinou pohledového jehlanu. Nemá ovšem smysl testovat
+ve vnitřních uzlech ty roviny, o kterých již víme, že se neprotínají s rodičem.
+Jedno z zrychlení algoritmu je tedy při testu průniku určit, které roviny mají
+být testovány a které testovány být nemusí.
+
+
+
+\subsection{Časová koherence}
+
+Šance, že se mezi dvěma snímky změní rovina, u které zjistíme že se obálka
+nachází vně pohledový jehlan , je relativně nízká. Jelikož ukončujeme test
+průniku v moment, kdy je obálka vně jednu rovinu, je vhodné testovat rovinu která
+selhala test průniku v minulém snímku jako první.
+
+%%%% --------------------------------------------------------
+\section{\label{SEC:Pitfalls}Potíže při implementaci}
+%\section{\label{SEC:Pitfalls}Implementation details}
+
+Implementaci jsem se rozhodl provést pomocí knihoven SDL a OpenGL. Nejprve jsem
+se rozhodl implementaci testovat na velkých trojúhelníkových sítí poskytnutých
+pro testování, což se ale při samotném vývoji ukázalo jako relativně nevhodná
+volba - Tyto testovací soubory zabírají často skoro až gigabajt místa, což při
+spuštění programu v debug módu může trvat mému jednoduchému .obj loaderu až
+minutu a půl na načtení. Pro načítání dat jsem tedy později implementoval systém, kde
+se při prvním načtení .obj souboru uloží binární soubor reprezentující data.
+Při dalším načítání se nejprve zkontroluje, zda soubor existuje a pokud ano,
+načte se ten. Načítání i velkého binárního souboru je poté velmi rychlé.
+
+Samotné modely poskytnuté na testování neměly vždy přiřazené normály, takže jsem
+se rozhodl vrcholům ve vertex shaderu přiřazovat náhodně barvu, aby byly
+jednotlivé vrcholy rozlišitelné. Za zmínku také stojí postup na získání
+jednotlivých rovin pohledového jehlanu z projekční matice, k čemuž jsem využil
+postup popsaný v \cite{gribb2001fast}.
+
+Poskytnuté modely bylo možné na grafické kartě GTX 1070 vykreslovat celé
+relativně rychle (s jedním modelem \textit{asianDragon.obj} byl výsledek více jak
+600 fps), takže v testovaných scénách bylo nutno těchto modelů vložit více
+(cca 60). Pro definici této scény je využit textový soubor, kde je možno také
+určit, zda jednotlivé modely ve scéně jsou vykreslovány v celku, či zda mají být
+předzpracovány a rozděleny pomocí midpoint split metody na menší modely s předem
+definovaným maximálním počtem trojúhelníků.
+
+Při implementaci BVH jsem také vytvořil jednoduché vykreslování jednotlivých
+vrstev stromu, abych se ujistil, že mnou implementované midpoint split dělení
+je správně. Na semestrální práci jsem pracoval cca 100 hodin, s většinou času
+strávenou na jiných věcech než je samotné programování osekávání pohledovým
+jehlanem (načítání obj, vykreslování, získání rovin z projekční matice, pohyb
+kamery, vytváření scén, měření výsledků psaní reportu). Na samotné tvorbě BVH
+a implementaci frustum culling algoritmu jsem strávil cca 20 hodin.
+
+
+
+%%%% --------------------------------------------------------
+\section{\label{SEC:Results}Naměřené výsledky}
+%\section{\label{SEC:Results}Results}
+
+Hlavní část měření probíhala na mém domácím stolním počítači, který má
+následující hardwarové a softwarové parametry:
+\begin{itemize}
+    \item Procesor Intel Core i5-7600K 64bit@3.80GHz (4 jádra)
+    \begin{itemize}
+        \item L1 4$\times$32 KB
+        \item L2 4$\times$256 KB
+        \item L3 6 MB
+    \end{itemize}
+    \item Grafická karta Nvidia GTX 1070 8GB
+    \item 24 GB DDR4 RAM
+    \item Samsung SSD 960 Evo 250GB NVMe disk
+    \item OS Windows 10 Pro verze 1903
+    \item Microsoft Visual Studio Community 2017
+    \item Parametry překladače:
+    \begin{itemize}
+        \item Intel C++ Compiler 19.0
+        \item /std=c++17
+        \item /O2
+        \item /Oi (Intrinsic funkce)
+        \item /Qipo (Mezisouborová optimalizace)
+        \item /GA (Optimalizace pro Windows OS)
+        \item /Qopt-matmul (Optimalizace maticového násobení)
+        \item /Qparallel (Optimalizace pomocí paralelizace)
+        \item /Quse-intel-optimized-headers (Hlavičkové soubory optimalizované pro intel)
+    \end{itemize}
+\end{itemize}
+
+Při testování jsem měřil několik odlišných proměnných po vteřinovém intervalu:
+\begin{itemize}
+  \item \textit{FPS} - Počet snímků od posledního zapsaného měření
+  \item \textit{Frametime} - Doba, kterou trval výpočet posledního snímku (v milisekundách)
+  \item \textit{Drawcalls} - Počet volání vykreslení na grafické kartě
+  \item \textit{GLTimerQuery} - Skutečný čas vykreslování na GPU získaný pomocí OpenGL
+      dotazu \texttt{GL\_TIME\_ELAPSED} (v milisekundách)
+  \item \textit{CPUtime} - Čas od počátku procházení BVH až po konec včetně volání OpenGL
+      vykreslovacích funkcí (v milisekundách)
+  \item \textit{Traversaltime} - Čas trvání odděleně zavolaného procházení BVH,
+      které nevolá žádné OpenGL příkazy a pouze navštíví potomky a spočítá počet
+      objektů, které by byly zobrazeny (v milisekundách)
+\end{itemize}
+
+Důležité je zmínit, že samotná optimalizace testů průniku bude znatelná nejvíce
+ve výsledku \textit{traversaltime}, jelikož ten reprezentuje pouze čas průchodu
+stromem bez volání funkcí OpenGL, které poté pracují s trojúhelníkovou sítí
+uloženou v jednotlivých listech.
+
+Všechny testy jsem prováděl vícekrát (cca 10 běhů), každý průběh uložil do .csv
+souboru a jednotlivé průběhy poté zprůměroval pomocí přiloženého Python skriptu.
+Pro vykreslení grafů byly poté výsledky vyhlazeny konvolucí s hammingovým okénkem,
+aby byl vidět průměrný výsledek ve větším časovém úseku. Pro některé scény jsem porovnával
+implementaci s zapnutou optimalizací (pomocí maskování a s využitím koherence)
+a bez optimalizací (testováním vždy všech šesti rovin). Také jsem otestoval scény
+bez ořezávání pohledovým jehlanem.
+
+\subsection{asianDragons-Split}
+
+Pro hlavní část měření jsem vytvořil scénu \textit{asianDragons-Split}. Scéna obsahuje
+60 instancí modelu \textit{asianDragon.obj} s velkými rozestupy a má varianty,
+ve kterých  se model rozdělí do listů s maximální velikostí 25 tisíc, 50 tisíc,
+100 tisíc, 200 tisíc, 500 tisíc, milion a dva miliony trojúhelníků. Samotný
+model obsahuje 7,2 milionů trojúhelníků a byla také vytvořena varianta scény,
+kde se model na menší části nedělí. Kamera scénou prolétává po Bézierově
+křivce.
+
+Výsledky měření této scény bez dodatečných optimalizací je vidět na
+obrázku~\ref{measure:NoOptim:asianDragons-Split}. Můžeme si povšimnout, že pro
+scénu s modely rozdělených do listů s 25 tisíci trojúhelníky až 200 tisíc
+trojúhelníků je celková rychlost vykreslování přibližně stejná. Scéna s nejméně
+trojúhelníků v listech je nepatrně rychlejší. U listů s 500 tisíců trojúhelníků
+a více je poté pokles ve výkonu, kde vykreslování plného modelu bez dělení na
+další listy může mít ve výsledku méně jak poloviční počet snímků za vteřinu
+oproti ostatním scénám.
+
+Je také možné si povšimnout, že moderní dedikované grafické karty
+nejsou tolik limitovány samotným počtem volání vykreslovacích příkazů --
+dvojnásobný nárůst v počtu vykreslení mezi scénou s 25 tisíc trojúhelníků v
+listech a scénou s 50 tisíc způsobuje minimální změnu ve výsledném běhu na
+grafické kartě. Kde tento výsledek známý již je je vidět při porovnávání běhu
+\textit{GLTimerQuery} a \textit{CPUtime}. \textit{CPUtime} ukazuje, jak rychle
+driver grafické karty předá běh zpět samotnému programu a grafická karta může
+běžet asynchronně vůči CPU. V tomto případě je vidět, že drivery karty nepracují
+nejlépe pokud se vykreslují příliš velké modely či pokud je volání vykreslování
+příliš. Pro nejlepší využití driverů je v listech vhodné mít pro testovanou
+konfiguraci přibližně 100 tisíc trojúhelníků.
+
+Jako poslední se zaměříme na dobu samotného průchodu všemi uzly BVH bez volání
+OpenGL vykreslovacích funkcí a můžeme si povšimnout, že i při stálém testování
+pohledového jehlanu pomocí šesti rovin je čas traverzace cca jedna setina času
+vykreslování a další optimalizace budou mít tedy minimální vliv na celkové trvání
+snímku. Toto bylo potvrzeno i pomocí profilování s programem Intel VTune Amplifier,
+který ukazoval výsledek, kde více jak 97\% času běhu aplikace byl běh samotného OpenGL
+driveru (buď volání vykreslovacích příkazů, nebo čekání na jejich dokreslení).
+
+Poté jsem provedl stejný test na této scéně se zapnutou optimalizací pomocí
+maskování stěn a časové koherence s podobnými výsledky. Měření je možno vidět na
+obrázku \ref{measure:AllOptim:asianDragons-Split} a je ve výsledném počtu snímků
+za vteřinu velmi podobné. Je vidět lehké zrychlení v čase traverzace pro případ
+největšího stromu (s listy s méně jak 25 tisíci trojůhelníků), a z pohledu
+efektivního využití driverů je stále nejlepší využít BVH s počtem listů okolo
+100 tisíc.
+
+Pro tuto scénu jsem prováděl také měření s vypnutým ořezávání pohledovým jehlanem
+(ale s trojúhelníky rozdělenými opět do různě velkých listů), které je možno vidět
+na obrázku \ref{measure:NoCull:asianDragons-Split}. Výsledky jsou časově
+konstantní (jelikož se nemění počet vykreslovacích příkazů) a pro asynchronní
+vykreslování opět vede scéna s modely s max 100 tisíc trojúhelníky.
+
+Čas dělení objektu \textit{asianDragon.obj} na různě velké listy, počet celkových
+listů po vytvoření 60 instancí dělených objektů ve scéně a čas stavby výsledného
+BVH nad celou scénou je vidět v tabulce \ref{table:desktop:asianDragon}. Pro další scény
+byly časy velmi podobné.
+
+\begin{table}[]
+\begin{center}
+\begin{tabular}{l|lll}
+      & Čas dělení & Počet listů & Čas stavby \\ \hline
+25k   & 4853 ms    & 26880       & 52.22 ms   \\
+50k   & 4383 ms    & 13980       & 26.06 ms   \\
+100k  & 3876 ms    & 6780        & 12.39 ms   \\
+200k  & 3358 ms    & 3360        & 5.57 ms    \\
+500k  & 2569 ms    & 1200        & 1.79 ms    \\
+1000k & 1916 ms    & 540         & 0.87 ms    \\
+2000k & 1465 ms    & 300         & 0.52 ms
+\end{tabular}
+\end{center}
+\caption{Čas dělení objektu \textit{asianDragon.obj} a stavby BVH nad 60 instancemi děleného objektu.}
+\label{table:desktop:asianDragon}
+\end{table}
+
+\subsection{asianDragons-Packed}
+
+Scéna \textit{asianDragons-Split} je pro testování efektu optimalizace možná
+nevhodná, protože mezi jednotlivými modely je relativně velká mezera a tak se
+často stává, že stěnu pohledového jehlanu neprotíná žádný model ve scéně.
+Tím pádem neprobíhá při traverzaci tolik testování průniku AABB-frustum, protože
+se testuje pouze tehdy, když byl průnik rodičovské obálky. V jiných případech se
+potomci buď rovnou vykreslí bez testování, nebo zahodí a nevykreslují vůbec.
+Proto jsem vytvořil novou scénu \textit{asianDragons-Packed} podobnou scéně
+předchozí s tím rozdílem, že modely mezi sebou mají podstatně menší mezery a při
+průletu kamerou je jich více v průniku se stěnou pohledového jehlanu. Výsledky
+těchto měření jsou na obrázcích~\ref{measure:NoOptim:asianDragons-Packed}(bez
+optimalizace), \ref{measure:AllOptim:asianDragons-Packed}(s optimalizací) a
+\ref{measure:NoCull:asianDragons-Packed}(s vypnutým ořezáváním).
+
+Výsledek je prakticky totožný s předchozí scénou a větší zrychlení traverzace
+není viditelné. Další testované scény jsem tedy dále netestoval ve variantě bez
+optimalizací, protože rozdíl ve výsledcích byl na mé grafické kartě zanedbatelný.
+
+\subsection{part\_of\_pompeii}
+
+Jako další scéna byla vytvořena scéna \textit{part\_of\_pompeii}. Tato scéna
+obsahuje 20 instancí modelu \texttt{part\_of\_pompeii.01.final.combined.obj},
+který obsahuje cca 16 milionů trojúhelníků a byla opět testována pro různě
+velký počet trojúhelníků v listech. Při testování (na obrázku
+\ref{measure:AllOptim:part_of_pompeii}) byl framerate opět nejlepší pro nejjemnější
+dělení a stejně jako v minulých případech byl pro nejlepší využití driverů a
+asynchronního vykreslování ideální počet trojúhelníků v listu v rozmezí 50 až
+100 tisíc.
+
+\subsection{testování na dalším stroji}
+
+Implementaci jsem také testoval na notebooku s integrovanou grafickou kartou a
+těmito parametry:
+
+\begin{itemize}
+    \item Procesor Intel Core i5-8250U 64bit@3.40GHz (4 jádra, 8 vláken)
+    \begin{itemize}
+        \item L1 4$\times$32 KB
+        \item L2 4$\times$256 KB
+        \item L3 6 MB
+    \end{itemize}
+    \item Integrovaná grafická karta Intel® UHD Graphics 620
+    \item 8 GB DDR4 RAM
+    \item Seagate ST1000LM035 1TB hard disk
+    \item OS Fedora 31, Linux 5.3.7
+    \item Parametry překladače:
+    \begin{itemize}
+        \item GCC 9.2.1
+        \item -std=gnu++17
+        \item -O3
+    \end{itemize}
+\end{itemize}
+
+Měření bylo provedeno na scéně \textit{asianDragons-Packed} a výsledky je možno
+vidět na obrázku \ref{measure:LaptopAllOptim:asianDragons-Packed}. Na datech
+je zřejmý slabší výkon grafické karty, ale poukazují také na rozdílnou implementaci
+grafického driveru, jelikož \textit{CPUtime} je nejrychlejší pro scénu s nejméně
+voláním vykreslovacích příkazů a nejvíce trojúhelníky v listech. Naopak nejdéle
+trvá grafickým driverům činnost při velkém množstvím vykreslovacích příkazů --
+Graf byl oříznut, aby byly vidět menší hodnoty, ale scéna s 25 tisíci trojúhelníků
+v listech měla \textit{CPUtime} více jak 330 milisekund za snímek při cca 10,000
+volání vykreslování.
+
+Ačkoliv je stroj grafickým výkonem podstatně horší, rychlost dělení objektu a
+stavby stromu je podstatně vyšší -- částečně způsobeno také jinou volbou překladače
+a agresivnějším nastavením optimalizace. Tabulka \ref{table:laptop:asianDragon}
+znázorňuje rychlost dělení a stavby stromů s různě velkými listy.
+
+\begin{table}[]
+\begin{center}
+\begin{tabular}{l|lll}
+      & Čas dělení & Počet listů & Čas stavby \\ \hline
+25k   & 1768 ms    & 26880       & 21.18 ms   \\
+50k   & 1697 ms    & 13980       & 9.67 ms   \\
+100k  & 1449 ms    & 6780        & 4.04 ms   \\
+200k  & 1279 ms    & 6780        & 1.89 ms   \\
+500k  & 1026 ms    & 1200        & 0.67 ms    \\
+1000k & 800 ms    & 540         & 0.27 ms    \\
+2000k & 640 ms    & 300         & 0.18 ms
+\end{tabular}
+\end{center}
+\caption{Čas dělení objektu \textit{asianDragon.obj} a stavby BVH nad 60 instancemi
+děleného objektu na druhém stroji.}
+\label{table:laptop:asianDragon}
+\end{table}
+
+
+%%%% --------------------------------------------------------
+\section{\label{SEC:Conclusion}Závěr}
+
+V této práci jsem implementoval algoritmus osekávání pohledovým jehlanem pomocí
+hierarchické datové struktury BVH. Ačkoliv zrychlení pomocí samotného testu
+intersekce je značné (závislé na pohledu kamery do scény), nepodařilo se mi
+získat znatelné zrychlení při využití maskování rovin a časové koherence. Zjistil
+jsem také, že pro nejlepší využití driveru grafické karty může být počet
+trojúhelníků v listech závislý na zařízení a pro různé platformy je ideální
+počet jiný.
+%******************************************************************
+% Tady nasleduje seznam literatury a to bud s pouzitim
+% rucne usporadaneho seznamu ci s pouzitim system bibtex (prikaz
+% \bibliographystyle{alpha} a \bibliography{dpgreport.bib}
+
+
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/NoOptimization/asianDragons-Split/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Split} bez dodatečných optimalizací
+             s různě velkým množstvím trojúhelníků v listech. Osa $x$ reprezentuje
+             čas měření v sekundách.}
+    \label{measure:NoOptim:asianDragons-Split}
+\end{figure}
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/AllEnabled/asianDragons-Split/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Split} s dodatečnými optimalizacemi
+             s různě velkým množstvím trojúhelníků v listech. Osa $x$ reprezentuje
+             čas měření v sekundách.}
+    \label{measure:AllOptim:asianDragons-Split}
+\end{figure}
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/NoCulling/asianDragons-Split/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Split} s vypnutým ořezáváním pohledovým
+             jehlanem. Osa $x$ reprezentuje čas měření v sekundách.}
+    \label{measure:NoCull:asianDragons-Split}
+\end{figure}
+
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/NoOptimization/asianDragons-Packed/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Packed} bez dodatečných optimalizací.
+             Osa $x$ reprezentuje čas měření v sekundách.}
+    \label{measure:NoOptim:asianDragons-Packed}
+\end{figure}
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/AllEnabled/asianDragons-Packed/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Packed} s dodatečnými
+             optimalizacemi. Osa $x$ reprezentuje čas měření v sekundách.}
+    \label{measure:AllOptim:asianDragons-Packed}
+\end{figure}
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/NoCulling/asianDragons-Packed/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Split} s vypnutým ořezávání pohledovým
+             jehlanem. Osa $x$ reprezentuje čas měření v sekundách.}
+    \label{measure:NoCull:asianDragons-Packed}
+\end{figure}
+
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/AllEnabled/part_of_pompeii/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{part\_of\_pompeii} s dodatečnými optimalizacemi
+             s různě velkým množstvím trojúhelníků v listech. Osa $x$ reprezentuje
+             čas měření v sekundách.}
+    \label{measure:AllOptim:part_of_pompeii}
+\end{figure}
+
+
+\begin{figure}
+    \begin{center}
+        \input{Measurements/Laptop-AllEnabled/asianDragons-Packed/page.pgf}
+    \end{center}
+    \caption{Měření na scéně \textit{asianDragons-Packed} na zařízení s integrovanou
+             Intel GPU pod OS Linux. Osa $x$ reprezentuje čas měření v sekundách.}
+    \label{measure:LaptopAllOptim:asianDragons-Packed}
+\end{figure}
+
+\bibliographystyle{abbrv}
+\bibliographystyle{alpha}
+\bibliography{dpgreport.bib}
+
+\end{document}

@@ -1,0 +1,19 @@
+\begin{thebibliography}{1}
+
+\bibitem{assarsson2000optimized}
+U.~Assarsson and T.~Moller.
+\newblock Optimized view frustum culling algorithms for bounding boxes.
+\newblock {\em Journal of graphics tools}, 5(1):9--22, 2000.
+
+\bibitem{gribb2001fast}
+G.~Gribb and K.~Hartmann.
+\newblock Fast extraction of viewing frustum planes from the
+  world-view-projection matrix.
+\newblock {\em Online document}, 2001.
+
+\bibitem{sykora2002efficient}
+D.~Sýkora and J.~Jelínek.
+\newblock Efficient view frustum culling.
+\newblock In {\em Central European Seminar on Computer Graphics}, 2002.
+
+\end{thebibliography}
